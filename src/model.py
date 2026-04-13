@@ -24,16 +24,23 @@ class Attention(nn.Module):
         self.attention_score_space = nn.Linear(hidden_dim, 1, bias=False)
         
         
-    def forward(self, sent_embedding: torch.Tensor, encoded_words: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, sent_embedding: torch.Tensor, encoded_words: torch.Tensor, mask: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         seq_len = encoded_words.size(1)
-        sent_embedding_expanded = sent_embedding.unsqueeze(1).repeat(1, seq_len, 1) # repeat sentence vec seq_len times -> sentence mat
+        sent_embedding_expanded = sent_embedding.unsqueeze(1).expand(-1, seq_len, -1) # repeat sentence vec seq_len times -> sentence mat
         
         energy = torch.tanh(self.sent_attention_space(sent_embedding_expanded) + self.word_attention_space(encoded_words))
         
         attention_scores = self.attention_score_space(energy).squeeze(-1)
+        attention_scores = attention_scores - attention_scores.max(dim=1, keepdim=True).values
+                
+        if mask is not None:
+            attention_scores = attention_scores.masked_fill(mask == 0, -1e9)
         
         attention_weights = torch.softmax(attention_scores, dim=1)
-        
+
+        if mask is not None:
+            attention_weights = attention_weights * mask
+            
         context_vector = torch.bmm(attention_weights.unsqueeze(1), encoded_words).squeeze(1)
         
         return context_vector, attention_weights
@@ -51,13 +58,14 @@ class ToneRegressor(nn.Module):
         self.score_space = nn.Linear(2 * hidden_dim, max_score)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        mask = (x != 1).float()
         words_embeddings = self.dropout(self.embeddings(x))
         
         encoded_words, (sent_embedding, _) = self.sent_embedding(words_embeddings)
         
-        query = torch.cat((sent_embedding[-2,:,:], sent_embedding[-1,:,:]), dim=1)
+        query = torch.cat((sent_embedding[0,:,:], sent_embedding[1,:,:]), dim=1)
         
-        context, words_weights = self.attention(query, encoded_words)
+        context, words_weights = self.attention(query, encoded_words, mask)
 
         score_logits = self.dropout(self.score_space(context))
         
@@ -87,7 +95,11 @@ class ScoreDataset(Dataset):
 
 
 def rmse_loss(y_true: torch.Tensor, y_pred: torch.Tensor) -> torch.Tensor:
-    return torch.sqrt(torch.mean((y_true - y_pred) ** 2)) 
+    diff = y_true - y_pred
+    
+    diff = torch.clamp(diff, min=-1e4, max=1e4)
+    return torch.sqrt(torch.mean(diff ** 2) + 1e-6)
+
 
 def visualize_attention_rgb(doc: List[str], weights: torch.Tensor, threshold: float = 0.1) -> None:
     min_w = weights.min().item()
@@ -120,6 +132,7 @@ def visualize_attention_rgb(doc: List[str], weights: torch.Tensor, threshold: fl
 
 def train(n_epoch:int, model: ToneRegressor, train_loader: DataLoader, val_loader: DataLoader) -> ToneRegressor:    
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+
     
     model.to(device)
     
@@ -138,6 +151,7 @@ def train(n_epoch:int, model: ToneRegressor, train_loader: DataLoader, val_loade
             
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             
             total_train_loss += loss.item()
@@ -165,7 +179,7 @@ def train(n_epoch:int, model: ToneRegressor, train_loader: DataLoader, val_loade
             score = score.to(device)
                 
             pred_score, weights = model(document)
-            doc_ind = torch.randint(0, len(document)-1, (1,)).item()
+            doc_ind = torch.randint(0, len(document), (1,)).item()
             doc = document[doc_ind].tolist()
             doc = tokenizer.detokenize(doc)
                         
@@ -187,7 +201,7 @@ if __name__ == "__main__":
     data = data[["text", "rating"]].head(len(data) // 2)
     data["rating"] = data["rating"] * 9 / 5 + 1
     
-    model = ToneRegressor(tokenizer.vocab_size, 64, 64, 10)
+    model = ToneRegressor(tokenizer.vocab_size, 512, 512, 10)
     
     dataset = ScoreDataset(tokenizer, data)
     
@@ -195,10 +209,9 @@ if __name__ == "__main__":
     generator.manual_seed(42)
     train_ds, val_ds = random_split(dataset, [0.8, 0.2], generator)
     
-    train_loader = DataLoader(train_ds, batch_size=64, shuffle=True, collate_fn=collate_fn)
+    train_loader = DataLoader(train_ds, batch_size=16, shuffle=True, collate_fn=collate_fn)
     val_loader = DataLoader(val_ds, batch_size=16, shuffle=True, collate_fn=collate_fn)
     
     model = train(10, model, train_loader, val_loader)
     
-    torch.save(model, os.path.join(MODELS_PTH, "model.pth"))
-    # model = torch.load(os.path.join(MODELS_PTH, "model.pth"), weights_only=False)
+    torch.save(model, os.path.join(MODELS_PTH, "model1.pth"))
