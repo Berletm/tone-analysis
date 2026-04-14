@@ -1,6 +1,6 @@
 from razdel import sentenize, tokenize
 from pymorphy3 import MorphAnalyzer
-from typing import List, Dict
+from typing import List, Dict, Tuple
 from constants import DATA_PTH, MODELS_PTH, STOP_POS, UNK_TOK, PAD_TOK
 import pandas as pd
 import os
@@ -36,19 +36,19 @@ class Tokenizer:
                     self.tok2str[len(self.tok2str)] = tok
         self.vocab_size = len(self.tok2str)
             
-    def tokenize(self, x: str) -> List[int]:
+    def tokenize(self, x: str) -> Tuple[List[int], List[int]]:
         toks = [tok.text for tok in tokenize(x)]
-        norm_toks = [
-                    res.normal_form 
-                    for tok in toks 
-                    if (parsed := self.morph.parse(tok)) 
-                    and (res := parsed[0]).tag.POS not in STOP_POS
-                    and re.search(r'[а-яА-ЯёЁ]', tok)
-                ]
+        initial_ids = []
+        norm_toks   = []
+        
+        for i, tok in enumerate(toks):
+            if (parsed := self.morph.parse(tok)) and (res := parsed[0]).tag.POS not in STOP_POS and re.search(r'[а-яА-ЯёЁ]', tok):
+                norm_toks.append(res.normal_form)
+                initial_ids.append(i)
         
         ids = [self.str2tok.get(tok, self.str2tok[UNK_TOK]) for tok in norm_toks]
         
-        return ids
+        return ids, initial_ids
     
     def detokenize(self, x: List[int]) -> List[str]:
         return [self.tok2str.get(tok, UNK_TOK) for tok in x]

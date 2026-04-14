@@ -58,7 +58,7 @@ class ToneRegressor(nn.Module):
         self.score_space = nn.Linear(2 * hidden_dim, max_score)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        mask = (x != 1).float()
+        mask = ((x != 1) & (x != 0)).float()
         words_embeddings = self.dropout(self.embeddings(x))
         
         encoded_words, (sent_embedding, _) = self.sent_embedding(words_embeddings)
@@ -86,7 +86,7 @@ class ScoreDataset(Dataset):
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
         review, score = self.data.iloc[index]
         
-        tokenized_review = self.tokenizer.tokenize(review)
+        tokenized_review, _ = self.tokenizer.tokenize(review)
         
         return torch.tensor(tokenized_review, dtype=torch.long), torch.tensor(score, dtype=torch.float32)
     
@@ -101,7 +101,7 @@ def rmse_loss(y_true: torch.Tensor, y_pred: torch.Tensor) -> torch.Tensor:
     return torch.sqrt(torch.mean(diff ** 2) + 1e-6)
 
 
-def visualize_attention_rgb(doc: List[str], weights: torch.Tensor, threshold: float = 0.1) -> None:
+def visualize_attention_rgb(doc: List[str], weights: torch.Tensor, threshold: float = 0.1, initial_ids:List[int]= None) -> None:
     min_w = weights.min().item()
     max_w = weights.max().item()
 
@@ -110,24 +110,52 @@ def visualize_attention_rgb(doc: List[str], weights: torch.Tensor, threshold: fl
     else:
         norm_weights = torch.ones_like(weights)
 
-    for word, w in zip(doc, norm_weights):
-        w_val = w.item()
+    if initial_ids is None:
+        for word, w in zip(doc, norm_weights):
+            w_val = w.item()
 
-        if w_val < threshold:
-            print(f"{word}", end=" ")
-            continue
+            if w_val < threshold:
+                print(f"{word}", end=" ")
+                continue
 
-        w_scaled = (w_val - threshold) / (1.0 - threshold)
+            w_scaled = (w_val - threshold) / (1.0 - threshold)
 
-        r = int(255.0 * (1.0 - w_scaled))
-        g = int(255.0 * w_scaled)
-        b = 0
+            r = int(255.0 * (1.0 - w_scaled))
+            g = int(255.0 * w_scaled)
+            b = 0
 
-        brightness = 0.299 * r + 0.587 * g + 0.114 * b
-        text_fg_code = "97" if brightness < 128 else "30"
+            brightness = 0.299 * r + 0.587 * g + 0.114 * b
+            text_fg_code = "97" if brightness < 128 else "30"
 
-        print(f"\033[48;2;{r};{g};{b}m\033[{text_fg_code}m{word}\033[0m", end=" ")
+            print(f"\033[48;2;{r};{g};{b}m\033[{text_fg_code}m{word}\033[0m", end=" ")
+    else:
+        j = 0
+        for i in range(len(doc)):
+            word = doc[i]
+            if j < len(initial_ids):
+                w = norm_weights[j]
+                weighted_word_id = initial_ids[j]
+                if weighted_word_id == i:
+                    w_val = w.item()
+                    j+= 1
 
+                    if w_val < threshold:
+                        print(f"{word}", end=" ")
+                        continue
+
+                    w_scaled = (w_val - threshold) / (1.0 - threshold)
+
+                    r = int(255.0 * (1.0 - w_scaled))
+                    g = int(255.0 * w_scaled)
+                    b = 0
+
+                    brightness = 0.299 * r + 0.587 * g + 0.114 * b
+                    text_fg_code = "97" if brightness < 128 else "30"
+
+                    print(f"\033[48;2;{r};{g};{b}m\033[{text_fg_code}m{word}\033[0m", end=" ")
+            else:
+                print(f"{word}", end=" ")
+                continue
     print("\n")
 
 def train(n_epoch:int, model: ToneRegressor, train_loader: DataLoader, val_loader: DataLoader) -> ToneRegressor:    
